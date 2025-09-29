@@ -1,7 +1,10 @@
 import {
     Context, Handler, param, PRIV, Types, UserModel, DomainModel,
-    ValidationError, UserNotFoundError, PermissionError, Time, SystemModel, moment
+    ValidationError, UserNotFoundError, PermissionError, Time, SystemModel
 } from 'hydrooj';
+import moment from 'moment';
+import { CONFIG, ERROR_MESSAGES, SUCCESS_MESSAGES } from './config';
+import { validatePrivilegeOperation, generateRandomPassword, buildSearchQuery } from './utils';
 
 declare module 'hydrooj' {
     interface Collections {
@@ -15,6 +18,23 @@ class UserManageHandler extends Handler {
         // 检查是否有系统管理权限
         this.checkPriv(PRIV.PRIV_EDIT_SYSTEM);
     }
+
+    protected async handleOperation<T>(
+        operation: string,
+        fn: () => Promise<T>,
+        successMessage?: string
+    ): Promise<T> {
+        try {
+            const result = await fn();
+            if (successMessage) {
+                this.response.success = successMessage;
+            }
+            return result;
+        } catch (error) {
+            console.error(`User management operation failed: ${operation}`, error);
+            throw error;
+        }
+    }
 }
 
 // 用户管理主页面处理器
@@ -23,17 +43,12 @@ class UserManageMainHandler extends UserManageHandler {
     @param('search', Types.String, true)
     @param('sort', Types.String, true)
     async get(domainId: string, page = 1, search = '', sort = '_id') {
-        const limit = 50;
+        const limit = CONFIG.PAGINATION.DEFAULT_PAGE_SIZE;
         const query: any = {};
         
         // 搜索功能
         if (search) {
-            const searchRegex = new RegExp(search, 'i');
-            query.$or = [
-                { uname: searchRegex },
-                { mail: searchRegex },
-                { _id: isNaN(+search) ? undefined : +search }
-            ].filter(Boolean);
+            Object.assign(query, buildSearchQuery(search, 'all'));
         }
         
         // 排序选项
@@ -96,19 +111,30 @@ class UserManageDetailHandler extends UserManageHandler {
     async post(domainId: string, uid: number, operation: string) {
         const udoc = await UserModel.getById(domainId, uid);
         if (!udoc) throw new UserNotFoundError(uid);
-        
-        if (operation === 'edit') {
-            await this.postEdit(domainId, uid);
-        } else if (operation === 'resetPassword') {
-            await this.postResetPassword(domainId, uid);
-        } else if (operation === 'setPriv') {
-            await this.postSetPriv(domainId, uid);
-        } else if (operation === 'ban') {
-            await this.postBan(domainId, uid);
-        } else if (operation === 'unban') {
-            await this.postUnban(domainId, uid);
+
+        switch (operation) {
+            case 'edit':
+                await this.postEdit(domainId, uid);
+                break;
+            case 'resetPassword':
+                await this.postResetPassword(domainId, uid);
+                break;
+            case 'setPriv':
+                await this.postSetPriv(domainId, uid);
+                break;
+            case 'ban':
+                await this.postBan(domainId, uid);
+                break;
+            case 'unban':
+                await this.postUnban(domainId, uid);
+                break;
+            case 'delete':
+                await this.postDelete(domainId, uid);
+                break;
+            default:
+                throw new ValidationError('operation', 'Invalid operation');
         }
-        
+
         this.back();
     }
     
@@ -125,16 +151,16 @@ class UserManageDetailHandler extends UserManageHandler {
             // 检查邮箱是否已被使用
             const existing = await UserModel.getByEmail(domainId, mail);
             if (existing && existing._id !== uid) {
-                throw new ValidationError('mail', 'Email already in use');
+                throw new ValidationError('mail', ERROR_MESSAGES.EMAIL_EXISTS);
             }
             await UserModel.setEmail(uid, mail);
         }
-        
+
         if (uname && uname !== udoc.uname) {
             // 检查用户名是否已被使用
             const existing = await UserModel.getByUname(domainId, uname);
             if (existing && existing._id !== uid) {
-                throw new ValidationError('uname', 'Username already in use');
+                throw new ValidationError('uname', ERROR_MESSAGES.USERNAME_EXISTS);
             }
             await UserModel.setUname(uid, uname);
         }
@@ -149,17 +175,20 @@ class UserManageDetailHandler extends UserManageHandler {
     }
     
     @param('uid', Types.Int)
-    @param('password', Types.Password)
-    async postResetPassword(domainId: string, uid: number, password: string) {
+    @param('password', Types.Password, true)
+    async postResetPassword(domainId: string, uid: number, password?: string) {
         const udoc = await UserModel.getById(domainId, uid);
         if (!udoc) throw new UserNotFoundError(uid);
-        
-        // 不允许重置超级管理员密码（除非当前用户也是超级管理员）
-        if (udoc.priv === PRIV.PRIV_ALL && this.user.priv !== PRIV.PRIV_ALL) {
-            throw new PermissionError('Cannot reset super admin password');
-        }
-        
-        await UserModel.setPassword(uid, password);
+
+        await validatePrivilegeOperation(uid, this.user.priv, this.user._id, 'resetPassword');
+
+        // 如果没有提供密码，生成随机密码
+        const newPassword = password || generateRandomPassword();
+
+        await UserModel.setPassword(uid, newPassword);
+
+        // 返回新密码给前端显示
+        this.response.newPassword = newPassword;
     }
     
     @param('uid', Types.Int)
@@ -167,12 +196,14 @@ class UserManageDetailHandler extends UserManageHandler {
     async postSetPriv(domainId: string, uid: number, priv: number) {
         const udoc = await UserModel.getById(domainId, uid);
         if (!udoc) throw new UserNotFoundError(uid);
-        
+
+        await validatePrivilegeOperation(uid, this.user.priv, this.user._id, 'setPriv');
+
         // 不允许修改超级管理员权限（除非当前用户也是超级管理员）
         if ((udoc.priv === PRIV.PRIV_ALL || priv === PRIV.PRIV_ALL) && this.user.priv !== PRIV.PRIV_ALL) {
             throw new PermissionError('Cannot modify super admin privileges');
         }
-        
+
         await UserModel.setPriv(uid, priv);
     }
     
@@ -180,12 +211,9 @@ class UserManageDetailHandler extends UserManageHandler {
     async postBan(domainId: string, uid: number) {
         const udoc = await UserModel.getById(domainId, uid);
         if (!udoc) throw new UserNotFoundError(uid);
-        
-        // 不允许封禁超级管理员
-        if (udoc.priv === PRIV.PRIV_ALL) {
-            throw new PermissionError('Cannot ban super admin');
-        }
-        
+
+        await validatePrivilegeOperation(uid, this.user.priv, this.user._id, 'ban');
+
         await UserModel.ban(uid, 'Banned by administrator');
     }
     
@@ -193,10 +221,21 @@ class UserManageDetailHandler extends UserManageHandler {
     async postUnban(domainId: string, uid: number) {
         const udoc = await UserModel.getById(domainId, uid);
         if (!udoc) throw new UserNotFoundError(uid);
-        
+
         // 恢复为默认权限
         const defaultPriv = await SystemModel.get('default.priv');
         await UserModel.setPriv(uid, defaultPriv);
+    }
+
+    @param('uid', Types.Int)
+    async postDelete(domainId: string, uid: number) {
+        const udoc = await UserModel.getById(domainId, uid);
+        if (!udoc) throw new UserNotFoundError(uid);
+
+        await validatePrivilegeOperation(uid, this.user.priv, this.user._id, 'delete');
+
+        // 执行删除操作
+        await UserModel.del(uid);
     }
 }
 
@@ -272,7 +311,10 @@ export async function apply(ctx: Context) {
         'Current Privilege': '当前权限',
         'Ban User': '封禁用户',
         'Unban User': '解封用户',
-        'Copy User ID': '复制用户ID'
+        'Delete User': '删除用户',
+        'Copy User ID': '复制用户ID',
+        'Are you sure to delete user {0}? This action cannot be undone!': '确定要删除用户 {0} 吗？此操作无法撤销！',
+        'User deleted successfully': '用户删除成功'
     });
     
     ctx.i18n.load('en', {
@@ -337,6 +379,9 @@ export async function apply(ctx: Context) {
         'Current Privilege': 'Current Privilege',
         'Ban User': 'Ban User',
         'Unban User': 'Unban User',
-        'Copy User ID': 'Copy User ID'
+        'Delete User': 'Delete User',
+        'Copy User ID': 'Copy User ID',
+        'Are you sure to delete user {0}? This action cannot be undone!': 'Are you sure to delete user {0}? This action cannot be undone!',
+        'User deleted successfully': 'User deleted successfully'
     });
 }

@@ -13,22 +13,28 @@ const page = new NamedPage('user_manage_main', () => {
     const type = $('#search-type').val();
     const sort = $('#sort-by').val();
     const order = $('#sort-order').val();
-    
-    let url = window.location.pathname + '?';
-    const params = [];
-    
+
+    const url = new URL(window.location);
+
     if (keyword) {
-      params.push(`${type}=${encodeURIComponent(keyword)}`);
+      url.searchParams.set(type, keyword);
+    } else {
+      url.searchParams.delete('uname');
+      url.searchParams.delete('mail');
+      url.searchParams.delete('_id');
     }
+
     if (sort) {
-      params.push(`sort=${sort}`);
+      url.searchParams.set('sort', sort);
     }
     if (order) {
-      params.push(`order=${order}`);
+      url.searchParams.set('order', order);
     }
-    
-    url += params.join('&');
-    pjax.request({ url });
+
+    // 移除page参数以回到第一页
+    url.searchParams.delete('page');
+
+    pjax.request({ url: url.toString() });
   });
   
   // 清空搜索
@@ -37,80 +43,134 @@ const page = new NamedPage('user_manage_main', () => {
     $('#search-type').val('uname');
     $('#sort-by').val('_id');
     $('#sort-order').val('desc');
-    pjax.request({ url: window.location.pathname });
+
+    const url = new URL(window.location);
+    url.searchParams.delete('uname');
+    url.searchParams.delete('mail');
+    url.searchParams.delete('_id');
+    url.searchParams.delete('sort');
+    url.searchParams.delete('order');
+    url.searchParams.delete('page');
+
+    pjax.request({ url: url.toString() });
   });
   
   // 快速封禁/解封用户
   $('.ban-user').on('click', async function(e) {
     e.preventDefault();
-    const uid = $(this).data('uid');
-    const username = $(this).data('username');
-    const action = $(this).data('action');
-    
-    const confirmMessage = action === 'ban' 
+    const $button = $(this);
+    const uid = $button.data('uid');
+    const username = $button.data('username');
+    const action = $button.data('action');
+
+    const confirmMessage = action === 'ban'
       ? i18n('Are you sure to ban user {0}?', username)
       : i18n('Are you sure to unban user {0}?', username);
-    
+
     if (!confirm(confirmMessage)) {
       return;
     }
-    
+
+    $button.prop('disabled', true).addClass('disabled');
+
     try {
       const response = await request.post(`/manage/users/${uid}`, {
         operation: action === 'ban' ? 'ban' : 'unban'
       });
-      
+
       if (response.success) {
         Notification.success(action === 'ban' ? i18n('User banned successfully') : i18n('User unbanned successfully'));
-        // 刷新页面
-        window.location.reload();
+        // 使用pjax刷新页面以保持状态
+        pjax.request({ url: window.location.href });
       } else {
         Notification.error(response.message || i18n('Operation failed'));
+        $button.prop('disabled', false).removeClass('disabled');
       }
     } catch (error) {
       console.error('Error:', error);
       Notification.error(i18n('Operation failed'));
+      $button.prop('disabled', false).removeClass('disabled');
     }
   });
   
   // 快速设置权限
   $('.set-priv').on('click', async function(e) {
     e.preventDefault();
-    const uid = $(this).data('uid');
-    const username = $(this).data('username');
-    const currentPriv = $(this).data('priv');
-    
+    const $button = $(this);
+    const uid = $button.data('uid');
+    const username = $button.data('username');
+    const currentPriv = $button.data('priv');
+
     const newPriv = prompt(i18n('Enter new privilege value for user {0}:', username), currentPriv);
     if (newPriv === null || newPriv === '') {
       return;
     }
-    
+
     const privValue = parseInt(newPriv, 10);
     if (isNaN(privValue)) {
       Notification.error(i18n('Invalid privilege value'));
       return;
     }
-    
+
     if (!confirm(i18n('Are you sure to set privilege of user {0} to {1}?', username, privValue))) {
       return;
     }
-    
+
+    $button.prop('disabled', true).addClass('disabled');
+
     try {
       const response = await request.post(`/manage/users/${uid}`, {
         operation: 'setPriv',
         priv: privValue
       });
-      
+
       if (response.success) {
         Notification.success(i18n('Privilege updated successfully'));
-        // 刷新页面
-        window.location.reload();
+        // 使用pjax刷新页面以保持状态
+        pjax.request({ url: window.location.href });
       } else {
         Notification.error(response.message || i18n('Operation failed'));
+        $button.prop('disabled', false).removeClass('disabled');
       }
     } catch (error) {
       console.error('Error:', error);
       Notification.error(i18n('Operation failed'));
+      $button.prop('disabled', false).removeClass('disabled');
+    }
+  });
+
+  // 删除用户
+  $('.delete-user').on('click', async function(e) {
+    e.preventDefault();
+    const $button = $(this);
+    const uid = $button.data('uid');
+    const username = $button.data('username');
+
+    const confirmMessage = i18n('Are you sure to delete user {0}? This action cannot be undone!', username);
+
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    $button.prop('disabled', true).addClass('disabled');
+
+    try {
+      const response = await request.post(`/manage/users/${uid}`, {
+        operation: 'delete'
+      });
+
+      if (response.success) {
+        Notification.success(i18n('User deleted successfully'));
+        // 使用pjax刷新页面以保持状态
+        pjax.request({ url: window.location.href });
+      } else {
+        Notification.error(response.message || i18n('Operation failed'));
+        $button.prop('disabled', false).removeClass('disabled');
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      Notification.error(i18n('Operation failed'));
+      $button.prop('disabled', false).removeClass('disabled');
     }
   });
   

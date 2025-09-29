@@ -144,30 +144,33 @@ const page = new NamedPage('user_manage_detail', () => {
   
   // 封禁/解封用户
   $('#ban-user, #unban-user').on('click', async function() {
+    const $button = $(this);
     const username = $('#display-uname').text();
-    const action = $(this).attr('id') === 'ban-user' ? 'ban' : 'unban';
-    
+    const action = $button.attr('id') === 'ban-user' ? 'ban' : 'unban';
+
     const confirmMessage = action === 'ban'
       ? i18n('Are you sure to ban user {0}? This will set their privilege to 0.', username)
       : i18n('Are you sure to unban user {0}? This will restore their privilege to 1.', username);
-    
+
     if (!confirm(confirmMessage)) {
       return;
     }
-    
+
+    $button.prop('disabled', true).addClass('disabled');
+
     try {
       const response = await request.post(`/manage/users/${uid}`, {
         operation: action
       });
-      
+
       if (response.success) {
         Notification.success(action === 'ban' ? i18n('User banned successfully') : i18n('User unbanned successfully'));
-        
+
         // 更新页面显示
         const newPriv = action === 'ban' ? 0 : 1;
         $('#current-privilege').text(newPriv);
         $('#set-privilege').data('current-priv', newPriv);
-        
+
         // 更新权限徽章
         const $badge = $('#privilege-badge');
         $badge.removeClass('success warning alert');
@@ -186,6 +189,43 @@ const page = new NamedPage('user_manage_detail', () => {
     } catch (error) {
       console.error('Error:', error);
       Notification.error(i18n('Operation failed'));
+    } finally {
+      $button.prop('disabled', false).removeClass('disabled');
+    }
+  });
+
+  // 删除用户
+  $('#delete-user').on('click', async function() {
+    const $button = $(this);
+    const username = $('#display-uname').text();
+
+    const confirmMessage = i18n('Are you sure to delete user {0}? This action cannot be undone!', username);
+
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    $button.prop('disabled', true).addClass('disabled');
+
+    try {
+      const response = await request.post(`/manage/users/${uid}`, {
+        operation: 'delete'
+      });
+
+      if (response.success) {
+        Notification.success(i18n('User deleted successfully'));
+        // 删除成功后返回用户列表
+        setTimeout(() => {
+          window.location.href = '/manage/users';
+        }, 1000);
+      } else {
+        Notification.error(response.message || i18n('Operation failed'));
+        $button.prop('disabled', false).removeClass('disabled');
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      Notification.error(i18n('Operation failed'));
+      $button.prop('disabled', false).removeClass('disabled');
     }
   });
   
